@@ -6,7 +6,11 @@
 
 ##### Enhancements
 
-* None.
+* Improve Swift declarations to look more like the Xcode Quick Help version,
+  for example including { get set }, and include more attributes.  
+  [John Fairhurst](https://github.com/johnfairh)
+  [#768](https://github.com/realm/jazzy/issues/768)
+  [#591](https://github.com/realm/jazzy/issues/591)
 
 ##### Bug Fixes
 

@@ -3,6 +3,7 @@ require 'pathname'
 require 'shellwords'
 require 'xcinvoke'
 require 'cgi'
+require 'rexml/document'
 
 require 'jazzy/config'
 require 'jazzy/executable'
@@ -301,19 +302,17 @@ module Jazzy
       end.reject { |param| param[:discussion].nil? }
     end
 
-    # rubocop:disable Metrics/CyclomaticComplexity
-    # rubocop:disable Metrics/PerceivedComplexity
     def self.make_doc_info(doc, declaration)
       return unless should_document?(doc)
 
-      declaration.declaration = Highlighter.highlight(
-        doc['key.parsed_declaration'] || doc['key.doc.declaration'],
-        Config.instance.objc_mode ? 'objc' : 'swift',
-      )
-      if Config.instance.objc_mode && doc['key.swift_declaration']
-        declaration.other_language_declaration = Highlighter.highlight(
-          doc['key.swift_declaration'], 'swift'
-        )
+      if Config.instance.objc_mode
+        declaration.declaration =
+          Highlighter.highlight_objc(doc['key.parsed_declaration'])
+        declaration.other_language_declaration =
+          Highlighter.highlight_swift(doc['key.swift_declaration'])
+      else
+        declaration.declaration =
+          Highlighter.highlight_swift(make_swift_declaration(doc, declaration))
       end
 
       unless doc['key.doc.full_as_xml']
@@ -327,8 +326,63 @@ module Jazzy
 
       @stats.add_documented
     end
-    # rubocop:enable Metrics/CyclomaticComplexity
-    # rubocop:enable Metrics/PerceivedComplexity
+
+    # Strip tags and convert entities
+    def self.xml_to_text(xml)
+      document = REXML::Document.new(xml)
+      REXML::XPath.match(document.root, '//text()').map(&:value).join
+    end
+
+    # Pull out attributes and their parameters
+    def self.extract_attributes(declaration, name = '\w+')
+      declaration.scan(/@#{name}\s*(?:\((?:[^")]*|"(?:[^"\\]*|\\.)*")*\))?/m)
+    end
+
+    def self.extract_availability(declaration)
+      extract_attributes(declaration, 'available')
+    end
+
+    def self.prefer_parsed_decl?(parsed, annotated_xml)
+      parsed &&
+        (annotated_xml.include?(' = default') || # SR-2608
+         parsed.match('@autoclosure|@escaping') || # SR-6321
+         parsed.include?("\n"))
+    end
+
+    # Replace the fully qualified name of a type with its base name
+    def self.unqualify_name(annotated_decl, declaration)
+      annotated_decl.gsub(declaration.fully_qualified_name_regexp,
+                          declaration.name)
+    end
+
+    # Find the best Swift declaration
+    def self.make_swift_declaration(doc, declaration)
+      # From compiler 'quick help' style
+      annotated_decl_xml = doc['key.annotated_decl']
+
+      return nil unless annotated_decl_xml
+
+      # From source code
+      parsed_decl = doc['key.parsed_declaration']
+
+      decl =
+        if prefer_parsed_decl?(parsed_decl, annotated_decl_xml)
+          parsed_decl
+        else
+          unqualify_name(xml_to_text(annotated_decl_xml), declaration)
+        end
+
+      # @available's only in compiler 'interface' style
+      available_attrs = extract_availability(doc['key.doc.declaration'] || '')
+
+      # Other declaration attributes
+      decl =~ /^((?:@\w+\s*(?:\([^)]*\)\s*)?)*)(.*)$/m
+      decl_attr_part, decl_main_part = Regexp.last_match.captures
+
+      available_attrs.concat(extract_attributes(decl_attr_part))
+                     .push(decl_main_part)
+                     .join("\n")
+    end
 
     def self.make_substructure(doc, declaration)
       declaration.children = if doc['key.substructure']
